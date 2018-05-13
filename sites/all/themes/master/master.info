@@ -1,0 +1,66 @@
+name = OS Master 2015
+description = Master is clean and powerful Drupal theme. Master is a fully responsive theme, which means it adapts to the screen resolution of the device it is being viewed on. Latest CSS3 techniques amazing design, all it placed in OS Master theme.
+core = 7.x
+
+;css style
+stylesheets[all][] = css/style.css
+stylesheets[all][] = css/color.css
+
+scripts[] = js/custom.js
+
+;Regions position
+regions[top_menu] = Top Menu
+regions[search] = Search
+regions[first_news] = First news
+regions[second_news] = Second news
+regions[top1] = Top 1
+regions[top2] = Top 2
+regions[top3] = Top 3
+regions[top4] = Top 4
+regions[top_content1] = Top Content 1
+regions[top_content2] = Top Content 2
+regions[top_content3] = Top Content 3
+regions[top_content4] = Top Content 4
+regions[recent_comments] = Recent comments
+regions[categories_blog] = Categories blog
+regions[recent_blog] = Recent blog posts
+regions[contact_info] = Contact info
+regions[line1] = Line 1
+regions[line2] = Line 2
+regions[line3] = Line 3
+regions[line4] = Line 4
+regions[top_content] = Top Content
+regions[feature1] = Feature 1
+regions[feature2] = Feature 2
+regions[feature3] = Feature 3
+regions[feature4] = Feature 4
+regions[contenttop1] = Contenttop 1
+regions[contenttop2] = Contenttop 2
+regions[contenttop3] = Contenttop 3
+regions[contenttop4] = Contenttop 4
+regions[sidebar_left] = Sidebar Left
+regions[content] = Content
+regions[sidebar_right] = Sidebar Right
+regions[contentbottom1] = Contentbottom 1
+regions[contentbottom2] = Contentbottom 2
+regions[contentbottom3] = Contentbottom 3
+regions[contentbottom4] = Contentbottom 4
+regions[bottom_line1] = Bottom Line 1
+regions[bottom_line2] = Bottom Line 2
+regions[bottom_line3] = Bottom Line 3
+regions[bottom_line4] = Bottom Line 4
+regions[bottom1] = Bottom 1
+regions[bottom2] = Bottom 2
+regions[bottom3] = Bottom 3
+regions[bottom4] = Bottom 4
+regions[last1] = last 1
+regions[last2] = last 2
+regions[last3] = last 3
+regions[last4] = last 4
+regions[footer_menu] = Footer Menu
+regions[footer1] = Footer 1
+regions[footer2] = Footer 2
+regions[footer3] = Footer 3
+regions[footer4] = Footer 4
+
+core = "7.x"

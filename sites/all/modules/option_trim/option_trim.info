@@ -1,0 +1,11 @@
+name = "Option Trim"
+description = Utility for defining options to be conditionally trimmed out of select fields.
+core = 7.x
+configure = admin/config/content/option_trim
+files[] = option_trim.module
+; Information added by Drupal.org packaging script on 2014-11-26
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "option_trim"
+datestamp = "1417022798"
+

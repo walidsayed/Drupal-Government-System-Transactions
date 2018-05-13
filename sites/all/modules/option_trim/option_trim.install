@@ -1,0 +1,85 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the option trim module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function option_trim_schema() {
+  $schema['option_trim_content_types'] = array(
+    'description' => 'Table to store option trim relationships.',
+    'fields' => array(
+      'otid' => array(
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE
+      ),
+      'content_type' => array(
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => ''
+      ),
+      'field1' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'default' => ''
+      ),
+      'field2' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'default' => ''
+      ),
+      'trim_type' => array(
+        'type' => 'varchar',
+        'length' => 10,
+        'not null' => TRUE,
+        'default' => 'show'
+      ),
+      'preserve_values' => array(
+        'type' => 'int',
+        'default' => 0,
+        'size' => 'tiny',
+      ),
+    ),
+    'indexes' => array(
+      'option_trim_id' => array('otid')
+    ),
+    'unique_keys' => array(
+      'otid' => array('otid')
+    ),
+    'primary_key' => array('otid'),
+  );
+
+  $schema['option_trim_values'] = array(
+    'description' => 'Table to store option trim values.',
+    'fields' => array(
+      'otid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE
+      ),
+      'field1_option' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => ''
+      ),
+      'field2_option' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => ''
+      ),
+    ),
+    'indexes' => array(
+      'option_trim_id' => array('otid')
+    ),
+  );
+  return $schema;
+}

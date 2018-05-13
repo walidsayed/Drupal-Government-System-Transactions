@@ -1,0 +1,708 @@
+<?php
+
+/*
+ * @file
+ * Drupal Module: Option Trim
+ * Adds the required Javascript to the bottom of all your Drupal pages
+ * to allow tracking by the Google Analytics statistics package.
+ *
+ * @author: Chris Yu <http://drupal.org/user/202205>
+ */
+
+/**
+ * Implements hook_permission().
+ */
+function option_trim_permission() {
+  return array(
+    'administer option trim' => array(
+      'title' => t('Administer Option Trim'),
+      'description' => t('Add/edit/delete rules for trimming select boxes.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function option_trim_menu() {
+  $access = array('Administer Option Trim');
+  $items['option_trim'] = array(
+    'title' => 'Option trimming',
+    'page callback' => 'option_trim_adjust',
+    'access arguments' => array('access content'),
+    'weight' => 5,
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/config/content/option_trim'] = array(
+    'title' => 'Option Trim',
+    'description' => 'Configure trims for fields by content type.',
+    'page callback' => 'option_trim_admin',
+    'access arguments' => $access,
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/content/option_trim/%option_trim_content_type/edit'] = array(
+    'title' => 'Edit Relationships',
+    'description' => 'Define option trim relationships per content type.',
+    'page callback' => 'drupal_get_form',
+    'access arguments' => $access,
+    'page arguments' => array('option_trim_relationship_form', 4),
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/config/content/option_trim/%otid/field_edit'] = array(
+    'title' => 'Edit Field Associations',
+    'page callback' => 'drupal_get_form',
+    'access arguments' => $access,
+    'page arguments' => array('option_trim_field_form', 4),
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/config/content/option_trim/%otid/field_delete'] = array(
+    'title' => 'Delete Field Associations',
+    'page callback' => 'drupal_get_form',
+    'access arguments' => $access,
+    'page arguments' => array('option_trim_delete_form', 4),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+// Load function for %otid.
+function otid_load($arg) {
+  $otid = db_select('option_trim_content_types', 'o')
+    ->fields('o', array('otid', 'content_type', 'field1', 'field2', 'preserve_values', 'trim_type'))
+    ->condition('o.otid', $arg)
+    ->execute()->fetchAllAssoc('otid', PDO::FETCH_ASSOC);
+  if ($otid) {
+    return $otid[$arg];
+  }
+  return FALSE;
+}
+
+// Load function for %option_trim_content_type.
+function option_trim_content_type_load($arg) {
+  $content_type = str_replace('-', '_', $arg);
+  if (node_type_get_type($content_type)) {
+    return $content_type;
+  }
+  return FALSE;
+}
+
+function _option_trim_add_js($form) {
+  static $js_added;
+  if (!$js_added) {
+    drupal_add_js(drupal_get_path('module', 'option_trim') .'/jquery.selectboxes.js');
+    // Custom sort function.
+    drupal_add_js('function option_trim_sort(a,b){return a[0] - b[0];}', 'inline');
+    $js_added = 1;
+  }
+  return $form;
+}
+
+// pre_render function to load field options into the $_SESSION.
+function option_trim_pre_render_session_options($element) {
+  static $content_fields;
+  if (empty($content_fields)) {
+    $content_fields = option_trim_content_fields($element['und']['#bundle']);
+  }
+  $_SESSION['option_trim_options'][$element['und']['#field_name']] = $content_fields[$element['und']['#field_name']]['options'];
+  return $element;
+}
+
+// pre_render function to fill in trimmed options by default.
+function option_trim_pre_render_default_values($element) {
+  $content_fields = option_trim_content_fields($element['und']['#bundle']);
+  $valid_types = option_trim_valid_widgets();
+  // element may be form altered to a non-valid form element such as value or markup, in which case do not try to trim.
+  if (isset($valid_types[$element['und']['#entity_type']]) && in_array($element['und']['#type'], $valid_types[$element['und']['#entity_type']])) {
+    $default_values = _option_trim_default_values($element['#otid']->otid, $element['#otid']->field1 == '-role');
+    $trim_type = $element['#otid']->trim_type;
+    $all_options = $content_fields[$element['#otid']->field2]['options'];
+    $trimmed_options = array();
+    foreach ($default_values as $default_value) {
+      if (isset($all_options[$default_value])) {
+        $trimmed_options[$default_value] = $all_options[$default_value];
+      }
+    }
+    if ($element['#otid']->preserve_values) {
+      if ($trim_type == 'show') {
+        foreach ($element['und']['#default_value'] as $old_value) {
+          if (!isset($trimmed_options[$old_value])) {
+            $trimmed_options[$old_value] = $all_options[$old_value];
+          }
+        }
+      }
+      elseif ($trim_type == 'hide') {
+        foreach ($element['und']['#default_value'] as $old_value) {
+          if (isset($trimmed_options[$old_value])) {
+            unset($trimmed_options[$old_value]);
+          }
+        }
+      }
+    }
+    $trimmed_options = ($trim_type == 'show') ? array_intersect($all_options, $trimmed_options) : array_diff($all_options, $trimmed_options);
+    $element['und']['#options'] = $trimmed_options;
+  }
+  return $element;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function option_trim_form_node_form_alter(&$form, &$form_state, $form_id) {
+  // Because option_trim_pre_render_session_options triggers node_add, need to load this only once on node form.
+  static $alter_added;
+  // Option trim admin pages use node_add() to gather field info but this code shouldn't run.
+  if (empty($alter_added) && !stristr($_GET['q'], 'admin/config/content/option_trim')) {
+    $alter_added = 1;
+    $node = menu_get_object();
+    $nid = isset($node->nid) ? $node->nid : 0;
+    $content_type = str_replace('_node_form', '', $form_id);
+    if (in_array($content_type, _option_trim_content_types())) {
+      $form['#pre_render'][] = '_option_trim_add_js';
+      $relationships = _option_trim_relationships($content_type);
+      $ot_js = '
+        (function ($) {
+          Drupal.behaviors.option_trim_alter = {
+          attach: function (context) {
+          ';
+      foreach ($relationships as $relationship) {
+        if ($relationship->field1 && $relationship->field1 != '-role') {
+          $otid = $relationship->otid;
+          $parent_id = _option_trim_field_id($relationship->field1);
+          $child_id = _option_trim_field_id($relationship->field2);
+          $ot_js .= "
+            var val_$otid;
+            var text_$otid;
+            var order_$otid;
+            var options_$otid = $('#". $child_id ."').clone();
+            $('#". $parent_id ."').change(function() {
+              update_child_select(this, $('#". $child_id ."').get(0), $otid, $nid);
+            });
+          ";
+          $ot_js .= "update_child_select($('#". $parent_id ."').get(0), $('#". $child_id ."').get(0), $otid, $nid);";
+          $ot_js .= "
+            function set_option_$otid(option_order) {
+              val_$otid = this.value;
+              text_$otid = this.text;
+              order_$otid = option_order;
+            }";
+          $form[$relationship->field2]['#pre_render'][] = 'option_trim_pre_render_session_options';
+        }
+        else {
+          $form[$relationship->field2]['#otid'] = $relationship;
+          $form[$relationship->field2]['#pre_render'][] = 'option_trim_pre_render_default_values';
+        }
+      }
+      $ot_js .= "
+        function update_child_select(parent_field, child_field, otid, nid) {
+          var base_options = eval('options_' + otid);
+          var selected_value = $(parent_field).selectedValues();
+          $.ajax({
+            dataType: 'json',
+            type: 'POST',
+            url: '". url("option_trim", array('absolute' => TRUE)) ."',
+            data: 'selected_value=' + selected_value + '&otid=' + otid + '&nid=' + nid,
+            success: function(json_results){
+              var previously_selected = $(child_field).selectedValues().toString().replace(/,/g , '|').replace('/', '\/');
+              var selected_string = '';
+              if (previously_selected) {
+                selected_string = new RegExp('^' + previously_selected + '$');
+              }
+              $(child_field).removeOption(/./);
+              var options_to_add = new Array();
+              for (var i in json_results) {
+                if(base_options.containsOption(json_results[i].toString(), eval('set_option_' + otid))) {
+                  options_to_add[options_to_add.length] = new Array(eval('order_' + otid), eval('val_' + otid), eval('text_' + otid));
+                }
+              }
+              options_to_add.sort(option_trim_sort);
+              for (i=0; i<options_to_add.length; i++) {
+                $(child_field).addOption(options_to_add[i][1], options_to_add[i][2], false);
+              }
+              $(child_field).selectOptions(selected_string, true);
+            }
+          });
+        }
+      ";
+      $ot_js .=
+      '}};
+    })(jQuery);';
+      $form['#attached']['js'][] = array(
+        'data' => $ot_js,
+        'type' => 'inline',
+      );
+    }
+  }
+}
+
+function option_trim_admin() {
+  $form = array();
+  $used_content_types = _option_trim_content_types();
+  $types = node_type_get_types();
+
+  foreach ($types as $content_type => $content_data) {
+    if (!in_array($content_type, $used_content_types)) {
+      $unused_content_types[$content_type] = $types[$content_type]->name;
+    }
+    else {
+      $used_content_types[$content_type] = $types[$content_type]->name;
+    }
+  }
+  $header = array(t('Name'), t('Type'), t('Description'), array('data' => t('Operations'), 'colspan' => '2'));
+  $rows = array();
+  $rows[] = array(array('data' => '<strong>' . t('Used Content Types') . '</strong>', 'colspan' => '5', 'class' => 'message'));
+  foreach ($used_content_types as $key => $name) {
+
+    $type = $types[$key];
+    $type_url_str = str_replace('_', '-', $type->type);
+    // Populate the operations field.
+    $operations = array();
+
+    // Set the edit column.
+    $operations[] = array('data' => l(t('edit'), 'admin/config/content/option_trim/' . $type_url_str . '/edit'));
+    $operations[] = array('data' => '');
+
+    $row = array(array('data' => $name), array('data' => $type->type), array('data' => $type->description));
+    foreach ($operations as $operation) {
+      $row[] = $operation;
+    }
+    $rows[] = $row;
+  }
+  if (!count($used_content_types)) {
+    $rows[] = array(array('data' => t('No content types used.'), 'colspan' => '5', 'class' => 'message'));
+  }
+  $rows[] = array(array('data' => '<strong>' . t('Unused Content Types') . '</strong>', 'colspan' => '5', 'class' => 'message'));
+
+  foreach ($unused_content_types as $key => $name) {
+    $type = $types[$key];
+    $type_url_str = str_replace('_', '-', $type->type);
+    // Populate the operations field.
+    $operations = array();
+
+    // Set the edit column.
+    $operations[] = array('data' => l(t('add'), 'admin/config/content/option_trim/' . $type_url_str . '/edit'));
+    $operations[] = array('data' => '');
+
+    $row = array(array('data' => $name), array('data' => $type->type), array('data' => $type->description));
+    foreach ($operations as $operation) {
+      $row[] = $operation;
+    }
+    $rows[] = $row;
+  }
+
+  if (!count($unused_content_types)) {
+    $rows[] = array(array('data' => t('No content types available to add.'), 'colspan' => '5', 'class' => 'message'));
+  }
+  return theme('table', array('header' => $header, 'rows' => $rows));
+}
+
+function option_trim_content_fields($content_type) {
+  $file = drupal_get_path('module', 'node') . '/node.pages.inc';
+  require_once DRUPAL_ROOT . '/' . $file;
+
+  $info = node_add($content_type);
+  $fields = array();
+  foreach ($info as $key => $value) {
+    if (strpos($key, 'field_') === 0) {
+      $fields[$key] = $value;
+    }
+  }
+  $valid_widgets = option_trim_valid_widgets();
+  $select_fields = array();
+  // Field data may be in ['und'] or ['und'][0] or ['und'][0]['value']
+  foreach ($fields as $field) {
+    $data = array();
+    if (!empty($field['und'][0]['value']['#type']) && $field['und'][0]['value']['#type'] == 'select') {
+      $data['entity'] = $field['und'][0]['value']['#entity_type'];
+      $data['type'] = $field['und'][0]['value']['#type'];
+      $data['name'] = $field['und'][0]['value']['#field_name'];
+      $data['title'] = $field['und'][0]['value']['#title'];
+      $data['options'] = isset($field['und'][0]['value']['#options']) ? $field['und'][0]['value']['#options'] : array();
+    }
+    elseif (!empty($field['und'][0]['#type']) && $field['und'][0]['#type'] == 'select') {
+      $data['entity'] = $field['und'][0]['#entity_type'];
+      $data['type'] = $field['und'][0]['#type'];
+      $data['name'] = $field['und'][0]['#field_name'];
+      $data['title'] = $field['und'][0]['#title'];
+      $data['options'] = isset($field['und'][0]['#options']) ? $field['und'][0]['#options'] : array();
+    }
+    else {
+      $data['entity'] = isset($field['und']['#entity_type']) ? $field['und']['#entity_type'] : '';
+      $data['type'] = isset($field['und']['#type']) ? $field['und']['#type'] : '';
+      $data['name'] = isset($field['und']['#field_name']) ? $field['und']['#field_name'] : '';
+      $data['title'] = isset($field['und']['#title']) ? $field['und']['#title'] : '';
+      $data['options'] = isset($field['und']['#options']) ? $field['und']['#options'] : array();
+    }
+
+    if (isset($valid_widgets[$data['entity']]) && in_array($data['type'], $valid_widgets[$data['entity']])) {
+      $select_fields[$data['name']] = $data;
+    }
+  }
+  return $select_fields;
+}
+
+function _option_trim_field_names($row) {
+  // Use machine name since admins should be familiar with it and field label may not be unique.
+  return $row['name'];
+}
+
+/**
+ * Form for adding new relationships.
+ */
+function option_trim_relationship_form($form, &$form_state, $content_type) {
+  $relationships = _option_trim_relationships($content_type);
+  $header = array('', t('Select to be trimmed'), t('Dependent on'), t('Persist'), t('Trim Type'));
+  $rows = array();
+  foreach ($relationships as $key => $relationship) {
+    $row = array(
+      array('data' => l(t('edit'), 'admin/config/content/option_trim/' . $relationship->otid . '/field_edit') . ' ' . l(t('delete'), 'admin/config/content/option_trim/' . $relationship->otid . '/field_delete')),
+      array('data' => $relationship->field2),
+      array('data' => $relationship->field1),
+      array('data' => $relationship->preserve_values ? 'Yes' : 'No'),
+      array('data' => $relationship->trim_type));
+    $rows[] = $row;
+  }
+  $markup = theme('table', array('header' => $header, 'rows' => $rows));
+  $form = array();
+  $form['relationships'] = array(
+    '#markup' => $markup
+  );
+  $select_data = option_trim_content_fields($content_type);
+  $select_fields = array_map('_option_trim_field_names', $select_data);
+  $form['field2'] = array(
+    '#type' => 'select',
+    '#title' => t('Select to be trimmed'),
+    '#options' => $select_fields,
+  );
+  $form['field1'] = array(
+    '#type' => 'select',
+    '#title' => t('Dependent on'),
+    '#options' => array('' => 'no dependency') + $select_fields + array('-role' => "-Logged in User's Role"),
+  );
+  $form['content_type'] = array(
+    '#type' => 'hidden',
+    '#value' => $content_type,
+  );
+  $form['preserve_values'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Persisting Values'),
+    '#options' => array('0' => '', '1' => 'Always preserve a previously selected option'),
+    '#description' => 'If checked, an invalid option will show up in a trimmed select if that node was previously saved with that option.'
+  );
+  $form['trim_type'] = array(
+    '#type' => 'radios',
+    '#title' => t('Type of trimming'),
+    '#default_value' => 'show',
+    '#options' => array('show' => 'Define which options should be shown.', 'hide' => 'Define which options should be hidden.'),
+    '#description' => t('If you define which options to show, newly added options will not be shown unless configured to show. If you define which options to hide, newly added options will automatically be shown.')
+  );
+  $form['submit'] = array('#type' => 'submit', '#value' => t('Add Relationship'));
+  return $form;
+}
+
+/**
+ * Submit handler for option_trim_relationship_form
+ */
+function option_trim_relationship_form_submit($form, &$form_state) {
+  $values = $form_state['values'];
+  $id = db_insert('option_trim_content_types')
+  ->fields(array(
+    'content_type' => $values['content_type'],
+    'field1' => $values['field1'],
+    'field2' => $values['field2'],
+    'trim_type' => $values['trim_type'],
+    'preserve_values' => $values['preserve_values'],
+  ))
+  ->execute();
+}
+
+/**
+ * Form for configuring parent to child relationships.
+ */
+function option_trim_field_form($form, &$form_state, $otid) {
+  global $user;
+  $form = array();
+  $field_info = option_trim_content_fields($otid['content_type']);
+
+  $field1 = $otid['field1'] && $otid['field1'] != '-role' ? $field_info[$otid['field1']] : array();
+  $field2 = $field_info[$otid['field2']];
+
+  $f1_options = array('(DEFAULT)' => '(DEFAULT)');
+  if ($otid['field1']) {
+    if ($otid['field1'] == '-role') {
+      $f1_options += user_roles();
+      $f1['#title'] = 'User Roles';
+    }
+    else {
+      $f1_options += $field1['options'];
+    }
+  }
+
+  $options = array();
+  $field_relationships = array();
+  foreach ($f1_options as $key => $option) {
+    $options = _option_trim_options($otid['otid'], $key);
+    $field_relationships[$key] = $options;
+  }
+
+  drupal_add_js(drupal_get_path('module', 'option_trim') .'/jquery.selectboxes.js');
+  drupal_add_js("var option_trim_json = ". drupal_json_encode($field_relationships) .";", 'inline');
+  drupal_add_js(drupal_get_path('module', 'option_trim') .'/option_trim.js');
+
+  $form['field1'] = array(
+    '#type' => 'select',
+    '#title' => isset($f1['#title']) ? $f1['#title'] : t('With no dependency, only (DEFAULT) values exist'),
+    '#options' => $f1_options,
+    '#attributes' => array('onchange' => 'populate_field2(this.value)')
+  );
+  $display_submit = TRUE;
+
+  $f2_options = $field2['options'];
+  if (!count($f2_options)) {
+    $f2_options = array('' => 'No options available');
+    $display_submit = FALSE;
+  }
+  $form['field2'] = array(
+    '#type' => 'select',
+    '#title' => $field2['title'],
+    '#options' => $f2_options,
+    '#size' => count($f2_options) <= 8 ? count($f2_options) : 8,
+    '#description' => t('Select options to @trim_type.', array('@trim_type' => $otid['trim_type'])),
+    '#multiple' => TRUE,
+  );
+  $form['otid'] = array(
+    '#type' => 'hidden',
+    '#value' => $otid['otid'],
+  );
+  if ($display_submit) {
+    $form['submit'] = array('#type' => 'submit', '#value' => t('Save Field Association'));
+  }
+  $form['summary'] = array(
+    '#markup' => _option_trim_summary($otid, $f1_options, $f2_options)
+  );
+  return $form;
+}
+
+/**
+ * Submit handler for  option_trim_field_form
+ */
+function option_trim_field_form_submit($form, &$form_state) {
+  db_delete('option_trim_values')
+    ->condition('otid', $form_state['values']['otid'])
+    ->condition('field1_option', $form_state['values']['field1'])
+    ->execute();
+  $options = $form_state['values']['field2'];
+  foreach ($options as $option) {
+    $id = db_insert('option_trim_values')
+      ->fields(array(
+        'otid' => $form_state['values']['otid'],
+        'field1_option' => $form_state['values']['field1'],
+        'field2_option' => $option,
+      ))
+    ->execute();
+  }
+}
+
+
+/**
+ * Returns a list of all content types with defined option trim relationships.
+ */
+function _option_trim_content_types() {
+  $results = db_query('SELECT DISTINCT content_type FROM {option_trim_content_types}', array(), array('fetch' => PDO::FETCH_ASSOC));
+  $types = array();
+  foreach ($results as $result) {
+    $types[$result['content_type']] = $result['content_type'];
+  }
+  return $types;
+}
+
+/**
+ * Returns all relationships for a content type.
+ */
+function _option_trim_relationships($content_type) {
+  $results = db_select('option_trim_content_types', 'o')
+    ->fields('o', array('otid', 'field1', 'field2', 'preserve_values', 'trim_type'))
+    ->condition('o.content_type', $content_type)
+    ->execute()->fetchAll();
+  return $results;
+}
+
+/**
+ * Defines which field widgets are select fields and trimmable.
+ */
+function option_trim_valid_widgets() {
+  $valid_widgets['node'] = array('select');
+  return $valid_widgets;
+}
+
+function option_trim_delete_form_submit($form, &$form_state) {
+  $values = $form_state['values'];
+  db_delete('option_trim_content_types')
+    ->condition('otid', $values['otid'])
+    ->execute();
+  db_delete('option_trim_values')
+    ->condition('otid', $values['otid'])
+    ->execute();
+  $form_state['redirect'] = $values['content_url'];
+}
+
+function option_trim_delete_form($form, &$form_state, $trim) {
+  $content_url = 'admin/config/content/option_trim/' . str_replace('_', '-', $trim['content_type']) . '/edit';
+  $form['otid'] = array(
+    '#type' => 'hidden',
+    '#value' => $trim['otid'],
+  );
+  $form['content_url'] = array(
+    '#type' => 'hidden',
+    '#value' => $content_url,
+  );
+  return confirm_form($form,
+    t('Are you sure you want to delete this option trim rule?'),
+    $content_url,
+    t('This deletion cannot be undone.'),
+    t('Delete'),
+    t('Cancel')
+  );
+}
+
+/**
+ * Used in an AJAX call to return valid options as a json result.
+ */
+function option_trim_adjust() {
+  $otid = $_POST['otid'];
+  $option_trim = db_select('option_trim_content_types', 'o')
+    ->fields('o', array('otid', 'field1', 'field2', 'preserve_values', 'trim_type'))
+    ->condition('o.otid', $otid)
+    ->execute()->fetchAll();
+  // There will only be one result, so use that.
+  $option_trim = $option_trim[0];
+  $original_options = array();
+  $all_options = isset($_SESSION['option_trim_options'][$option_trim->field2]) ? $_SESSION['option_trim_options'][$option_trim->field2] : array();
+  $selected_value = explode(',', $_POST['selected_value']);
+  $query_values = array_merge(array($otid), $selected_value);
+  $field1_or = db_or();
+  $field1_or
+    ->condition('field1_option', '(DEFAULT)')
+    ->condition('field1_option', $query_values, 'IN');
+  $options = db_select('option_trim_values', 'o')
+    ->fields('o', array('field2_option'))
+    ->condition('o.otid', $otid)
+    ->condition($field1_or)
+    ->execute()->fetchAll();
+  $original_options = array();
+  $trimmed_options = array();
+  foreach ($options as $option) {
+    $trimmed_options[$option->field2_option] = $all_options[$option->field2_option];
+  }
+  if ($option_trim->preserve_values && $_POST['nid']) {
+    $original_node = node_load($_POST['nid']);
+    $original_options = $original_node->{$option_trim->field2};
+    if ($option_trim->trim_type == 'show') {
+      foreach ($original_options as $old_value) {
+        if (!isset($trimmed_options[$old_value[key($old_value)]])) {
+          $trimmed_options[$old_value[key($old_value)]] = $all_options[$old_value[key($old_value)]];
+        }
+      }
+    }
+    elseif ($option_trim->trim_type == 'hide') {
+      foreach ($original_options as $old_value) {
+        if (isset($trimmed_options[$old_value[key($old_value)]])) {
+          unset($trimmed_options[$old_value[key($old_value)]]);
+        }
+      }
+    }
+  }
+  $output = ($option_trim->trim_type == 'show') ? array_intersect($all_options, $trimmed_options) : array_diff($all_options, $trimmed_options);
+  drupal_add_http_header('Content-Type', 'text/javascript');
+  print drupal_json_encode(array_keys($output));
+  exit;
+}
+
+/**
+ * Markup to display a summary of parent to child options available for a relationship.
+ */
+function _option_trim_summary($ot, $f1_options, $f2_options) {
+  $otid = $ot['otid'];
+  $trim_type = $ot['trim_type'];
+  $array_count = 0;
+  $sorted_vals = array();
+  if (is_array($f2_options)) {
+    while (list($key, $val) = each($f2_options)) {
+      $sorted_vals[$key] = $array_count;
+      $array_count ++;
+    }
+  }
+  $markup = '<h2>Summary of options that will be shown:</h2>';
+  foreach ($f1_options as $key => $option) {
+    $associations = db_query("SELECT field2_option FROM {option_trim_values} WHERE otid = :otid AND field1_option = :field1", array(':otid' => $otid, ':field1' => $key), array('fetch' => PDO::FETCH_ASSOC));
+    $rows = array();
+    $header = array($option);
+    $rows[] = array(0 => array('data' => '<strong>'. t('Child Select Options') .'</strong>', 'placement' => -1));
+    $row_options = $f2_options;
+    $field_associations = array();
+    foreach ($associations as $association) {
+      $field_associations[$association['field2_option']] = $row_options[$association['field2_option']];
+    }
+    $row_options = ($trim_type == 'show') ? array_intersect($row_options, $field_associations) : array_diff($row_options, $field_associations);
+    foreach ($row_options as $row_key => $row) {
+      $rows[] = array(array('data' => htmlspecialchars($row), 'placement' => $sorted_vals[$row_key]));
+    }
+
+    // Preserve the sorting of the original select box.
+    uasort($rows, '_ot_sort');
+    $markup .= '<p>'. theme('table', array('header' => $header, 'rows' => $rows)) .'</p>';
+  }
+  return $markup;
+}
+
+/**
+ * Custom sort function.
+ */
+function _ot_sort($a, $b) {
+  return ($a[0]['placement'] > $b[0]['placement']);
+}
+
+/**
+ * Returns valid child options based on a selected parent option.
+ */
+function _option_trim_options($otid, $field1) {
+  $values = db_query("SELECT field2_option FROM {option_trim_values} WHERE otid = :otid AND field1_option = :field1", array(':otid' => $otid, ':field1' => $field1), array('fetch' => PDO::FETCH_ASSOC));
+  $return = array();
+  // Without iterating through $values the return from db_query isn't the expected array.
+  foreach ($values as $key => $value) {
+    $return[] = $value['field2_option'];
+  }
+  return $return;
+}
+
+/**
+ * Returns default values for a trimmed select box.
+ */
+function _option_trim_default_values($otid, $role = FALSE) {
+  if ($role) {
+    global $user;
+    $query_values = array_merge(array($otid), array_keys($user->roles));
+    $field1_or = db_or();
+    $field1_or
+      ->condition('field1_option', '(DEFAULT)')
+      ->condition('field1_option', $query_values, 'IN');
+    $options = db_select('option_trim_values', 'o')
+      ->fields('o', array('field2_option'))
+      ->condition('o.otid', $otid)
+      ->condition($field1_or)
+      ->execute()->fetchAll();
+  }
+  else {
+    $options = db_query("SELECT field2_option FROM {option_trim_values} WHERE otid = :otid AND field1_option = '(DEFAULT)'", array(':otid' => $otid), array('fetch' => PDO::FETCH_ASSOC));
+  }
+  $values = array();
+  foreach ($options as $option) {
+    $values[] =  $option['field2_option'];
+  }
+  return $values;
+}
+
+// Gets a field id based on field name.
+function _option_trim_field_id($field_name) {
+  return 'edit-' . str_replace('_', '-', $field_name) . '-und';
+}
